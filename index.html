@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b1220">
+<title>JARVIS</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;height:100dvh;display:flex;flex-direction:column;background:#0b1220;color:#e6f1ff;font-family:system-ui,sans-serif}
+  header{padding:12px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #1c2b4a;gap:8px}
+  h1{margin:0;font-size:18px;letter-spacing:4px;color:#4fd1ff}
+  label{font-size:13px;color:#9db4d8}
+  button{font-family:inherit}
+  #gear{background:none;border:0;font-size:22px;color:#9db4d8}
+  #log{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+  .m{max-width:85%;padding:10px 14px;border-radius:14px;line-height:1.4;font-size:15px;white-space:pre-wrap}
+  .u{align-self:flex-end;background:#1d4ed8}
+  .j{align-self:flex-start;background:#16233f;border:1px solid #243a66}
+  .s{align-self:center;color:#7d93b8;font-size:12px}
+  footer{padding:14px;display:flex;flex-direction:column;align-items:center;gap:10px;border-top:1px solid #1c2b4a}
+  #mic{width:76px;height:76px;border-radius:50%;border:0;font-size:30px;background:#0ea5e9;color:#fff}
+  #mic.on{background:#ef4444;animation:p 1.2s infinite}
+  @keyframes p{50%{box-shadow:0 0 0 14px rgba(239,68,68,.2)}}
+  #row{display:flex;gap:8px;width:100%}
+  #txt,.f{padding:10px 12px;border-radius:10px;border:1px solid #243a66;background:#101a30;color:#e6f1ff;font-size:15px;width:100%}
+  #txt{flex:1}
+  #send,.b{padding:10px 16px;border-radius:10px;border:0;background:#1d4ed8;color:#fff}
+  #set{position:fixed;inset:0;background:#0b1220;overflow-y:auto;padding:16px;display:none;flex-direction:column;gap:10px}
+  #set.open{display:flex}
+  #set h2{margin:0;font-size:16px;color:#4fd1ff}
+  textarea.f{min-height:110px}
+  small{color:#7d93b8}
+</style>
+</head>
+<body>
+<header>
+  <h1>JARVIS</h1>
+  <label><input type="checkbox" id="hf"> Hands-free ("Jarvis...")</label>
+  <button id="gear" aria-label="Settings">⚙️</button>
+</header>
+<div id="log"></div>
+<footer>
+  <button id="mic" aria-label="Talk">🎤</button>
+  <div id="row"><input id="txt" placeholder="Ya yahan type karo..."><button id="send">Send</button></div>
+</footer>
+
+<div id="set">
+  <h2>Settings</h2>
+  <label>Anthropic API key (sirf is phone me save hoti hai)</label>
+  <input class="f" id="key" type="password" placeholder="sk-ant-...">
+  <label>Mera project (naam, topic, goal, status)</label>
+  <textarea class="f" id="proj" placeholder="Project ke bare me likho..."></textarea>
+  <label>Project files add karo (.txt .md .py .json .csv)</label>
+  <input class="f" id="files" type="file" multiple accept=".txt,.md,.py,.js,.json,.csv">
+  <small id="docinfo"></small>
+  <label>Notes (Jarvis ne jo save kiye)</label>
+  <textarea class="f" id="notes" readonly></textarea>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <button class="b" id="save">Save & Close</button>
+    <button class="b" id="clrhist" style="background:#475569">Memory clear</button>
+    <button class="b" id="clrdocs" style="background:#475569">Files clear</button>
+  </div>
+</div>
+
+<script>
+const MODEL = "claude-sonnet-5-5";
+const $ = id => document.getElementById(id);
+const log=$('log'), mic=$('mic'), hf=$('hf'), txt=$('txt');
+
+// ---------- storage ----------
+const get = (k,d) => { try{ const v=localStorage.getItem(k); return v===null?d:JSON.parse(v); }catch(e){ return d; } };
+const put = (k,v) => { try{ localStorage.setItem(k, JSON.stringify(v)); return true; }catch(e){ alert('Storage full ya blocked'); return false; } };
+
+// ---------- UI helpers ----------
+function add(cls,t){ const d=document.createElement('div'); d.className='m '+cls; d.textContent=t; log.appendChild(d); log.scrollTop=log.scrollHeight; return d; }
+const sys = t => add('s', t);
+
+// ---------- tools ----------
+function searchDocs(q){
+  const docs = get('docs', []);
+  if(!docs.length) return "No project files uploaded. Ask the user to add files in Settings.";
+  const words = q.toLowerCase().split(/\W+/).filter(w=>w.length>2);
+  const hits=[];
+  docs.forEach(d=>{
+    for(let i=0;i<d.text.length;i+=800){
+      const c = d.text.slice(Math.max(0,i-150), i+800), lc=c.toLowerCase();
+      const score = words.reduce((s,w)=>s+(lc.split(w).length-1),0);
+      if(score>0) hits.push({score, s:`[${d.name}]\n${c}`});
+    }
+  });
+  hits.sort((a,b)=>b.score-a.score);
+  return hits.slice(0,3).map(h=>h.s).join("\n\n---\n\n") || "Nothing relevant found in project files.";
+}
+function runTool(name,input){
+  if(name==='search_project_docs') return searchDocs(input.query||'');
+  if(name==='save_note'){ const n=get('notes',[]); n.push(new Date().toLocaleString()+' | '+input.text); put('notes',n); return 'Note saved.'; }
+  if(name==='get_time') return new Date().toString();
+  return 'Unknown tool.';
+}
+const TOOLS = [
+  {type:"web_search_20250305", name:"web_search", max_uses:3},
+  {name:"search_project_docs", description:"Search the user's uploaded project files and return relevant passages.",
+   input_schema:{type:"object",properties:{query:{type:"string"}},required:["query"]}},
+  {name:"save_note", description:"Save a note to the user's notes.",
+   input_schema:{type:"object",properties:{text:{type:"string"}},required:["text"]}},
+  {name:"get_time", description:"Get current date and time.", input_schema:{type:"object",properties:{}}}
+];
+function system(){
+  return `You are JARVIS, a personal voice assistant and research partner.
+User's project:
+${get('proj','(not provided yet)')}
+
+Rules:
+- Reply in the user's language (Hinglish is fine).
+- Answers are spoken aloud: keep them short (2-5 sentences), no markdown, no bullets, no emojis.
+- Explain simply with one small example.
+- Use web_search for current or uncertain things.
+- Use search_project_docs for questions about the user's project files.
+- Use save_note when asked to remember or note something.`;
+}
+
+// ---------- brain ----------
+async function askClaude(text){
+  const key = get('key','');
+  if(!key) throw new Error('Settings me API key daalo.');
+  const hist = get('hist', []);
+  const messages = [...hist, {role:'user', content:text}];
+  let resp;
+  for(let i=0;i<8;i++){
+    const r = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'content-type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01',
+               'anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:MODEL,max_tokens:1000,system:system(),tools:TOOLS,messages})
+    });
+    resp = await r.json();
+    if(!r.ok) throw new Error(resp.error?.message || ('HTTP '+r.status));
+    messages.push({role:'assistant', content:resp.content});
+    if(resp.stop_reason==='tool_use'){
+      const results = resp.content.filter(b=>b.type==='tool_use')
+        .map(b=>({type:'tool_result', tool_use_id:b.id, content:runTool(b.name,b.input)}));
+      messages.push({role:'user', content:results});
+    } else if(resp.stop_reason==='pause_turn'){ continue; }
+    else break;
+  }
+  const answer = resp.content.filter(b=>b.type==='text').map(b=>b.text).join('').trim() || 'Sorry, jawab nahi mila.';
+  put('hist', [...hist, {role:'user',content:text}, {role:'assistant',content:answer}].slice(-20));
+  return answer;
+}
+
+// ---------- voice ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec=null, listening=false, speaking=false, busy=false;
+
+function speak(text, done){
+  const u = new SpeechSynthesisUtterance(text.replace(/[*#`_>\[\]]/g,''));
+  const v = speechSynthesis.getVoices();
+  const pick = v.find(x=>x.lang==='hi-IN') || v.find(x=>x.lang==='en-IN') || v.find(x=>x.lang.startsWith('en'));
+  if(pick){ u.voice=pick; u.lang=pick.lang; } else u.lang='en-IN';
+  speaking=true; stopRec();
+  u.onend=u.onerror=()=>{ speaking=false; done&&done(); };
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
+}
+async function ask(text){
+  if(busy) return; busy=true;
+  add('u',text); const th=sys('soch raha hoon...');
+  try{
+    const reply = await askClaude(text);
+    th.remove(); add('j',reply); busy=false;
+    speak(reply, ()=>{ if(hf.checked||listening) startRec(); });
+  }catch(e){ th.remove(); add('j','Error: '+e.message); busy=false; }
+}
+function startRec(){
+  if(!SR){ sys('Voice ke liye Chrome use karo.'); return; }
+  if(rec||speaking) return;
+  rec = new SR(); rec.lang='en-IN'; rec.continuous=hf.checked; rec.interimResults=false;
+  rec.onresult = e=>{
+    let t = e.results[e.results.length-1][0].transcript.trim();
+    if(hf.checked){
+      if(!/jarvis/i.test(t)) return;
+      t = t.replace(/jarvis/ig,'').trim();
+      if(!t){ speak('Haan, boliye.', ()=>startRec()); return; }
+    }
+    listening=false; stopRec(); mic.classList.remove('on'); ask(t);
+  };
+  rec.onend = ()=>{ rec=null; if((hf.checked||listening)&&!speaking&&!busy) setTimeout(startRec,300); else mic.classList.remove('on'); };
+  rec.onerror = e=>{ if(e.error==='not-allowed'){ sys('Mic permission do (page https par hona chahiye).'); listening=false; hf.checked=false; } };
+  try{ rec.start(); mic.classList.add('on'); }catch(e){ rec=null; }
+}
+function stopRec(){ if(rec){ const r=rec; rec=null; r.onend=null; try{r.stop();}catch(e){} } }
+
+mic.onclick = ()=>{
+  if(mic.classList.contains('on')){ listening=false; hf.checked=false; stopRec(); mic.classList.remove('on'); }
+  else{ speechSynthesis.cancel(); listening=true; startRec(); }
+};
+hf.onchange = ()=>{ if(hf.checked){ listening=true; startRec(); } else{ listening=false; stopRec(); mic.classList.remove('on'); } };
+$('send').onclick = ()=>{ const t=txt.value.trim(); if(t){ txt.value=''; ask(t); } };
+txt.onkeydown = e=>{ if(e.key==='Enter') $('send').click(); };
+
+// ---------- settings ----------
+function refreshSettings(){
+  $('key').value = get('key',''); $('proj').value = get('proj','');
+  $('notes').value = get('notes',[]).join('\n');
+  const d = get('docs',[]); $('docinfo').textContent = d.length ? d.length+' file(s): '+d.map(x=>x.name).join(', ') : 'Koi file nahi.';
+}
+$('gear').onclick = ()=>{ refreshSettings(); $('set').classList.add('open'); };
+$('save').onclick = ()=>{ put('key',$('key').value.trim()); put('proj',$('proj').value); $('set').classList.remove('open'); };
+$('clrhist').onclick = ()=>{ put('hist',[]); alert('Memory clear ho gayi.'); };
+$('clrdocs').onclick = ()=>{ put('docs',[]); refreshSettings(); };
+$('files').onchange = async e=>{
+  const docs = get('docs',[]);
+  for(const f of e.target.files){ docs.push({name:f.name, text:await f.text()}); }
+  put('docs',docs); refreshSettings(); e.target.value='';
+};
+
+speechSynthesis.onvoiceschanged = ()=>{};
+sys('Mic dabao aur bolo, ya Hands-free on karke "Jarvis" bolo.');
+if(!get('key','')){ refreshSettings(); $('set').classList.add('open'); }
+</script>
+</body>
+</html>
